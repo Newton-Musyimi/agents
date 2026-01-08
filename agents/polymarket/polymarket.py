@@ -44,8 +44,13 @@ class Polymarket:
 
         self.chain_id = 137  # POLYGON
         self.private_key = os.getenv("POLYGON_WALLET_PRIVATE_KEY")
+        self.proxy_address = os.getenv("POLYMARKET_PROXY_ADDRESS")
         self.polygon_rpc = "https://polygon-rpc.com"
         self.w3 = Web3(Web3.HTTPProvider(self.polygon_rpc))
+
+        self.wallet_address = Account.from_key(self.private_key).address
+        self.funder = self.proxy_address or self.wallet_address
+        self.signature_type = 2 if self.proxy_address else 0
 
         self.exchange_address = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e"
         self.neg_risk_exchange_address = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
@@ -70,12 +75,36 @@ class Polymarket:
         self._init_approvals(False)
 
     def _init_api_keys(self) -> None:
+        raw_client = ClobClient(self.clob_url, key=self.private_key, chain_id=self.chain_id)
+        creds_raw = raw_client.create_or_derive_api_key()
+        
         self.client = ClobClient(
-            self.clob_url, key=self.private_key, chain_id=self.chain_id
+            self.clob_url, 
+            key=self.private_key, 
+            chain_id=self.chain_id,
+            creds=ApiCreds(
+                api_key=creds_raw['apiKey'],
+                api_secret=creds_raw['secret'],
+                api_passphrase=creds_raw['passphrase']
+            ),
+            signature_type=self.signature_type,
+            funder=self.funder
         )
-        self.credentials = self.client.create_or_derive_api_creds()
-        self.client.set_api_creds(self.credentials)
-        # print(self.credentials)
+
+    def place_order(self, market_id: str, side: str, size: float, price: float):
+        """Modified to use create_and_post_order correctly."""
+        order_args = {
+            "token_id": market_id, # In many contexts market_id passed here is actually token_id
+            "price": price,
+            "size": size,
+            "side": side.upper()
+        }
+        return self.client.create_and_post_order(order_args)
+
+    async def get_order(self, order_id: str):
+        """Fetch order status."""
+        return self.client.get_order(order_id)
+
 
     def _init_approvals(self, run: bool = False) -> None:
         if not run:
