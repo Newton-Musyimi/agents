@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 
 from web3 import Web3
 from web3.constants import MAX_INT
-from web3.middleware import geth_poa_middleware
 
 import httpx
 from py_clob_client.client import ClobClient
@@ -27,6 +26,7 @@ from py_clob_client.clob_types import (
     OrderBookSummary,
 )
 from py_clob_client.order_builder.constants import BUY
+from eth_account import Account
 
 from agents.utils.objects import SimpleMarket, SimpleEvent
 
@@ -50,7 +50,7 @@ class Polymarket:
 
         self.wallet_address = Account.from_key(self.private_key).address
         self.funder = self.proxy_address or self.wallet_address
-        self.signature_type = 2 if self.proxy_address else 0
+        self.signature_type = 2 if self.proxy_address else 0  # 2=Proxy/Browser Wallet, 0=EOA
 
         self.exchange_address = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e"
         self.neg_risk_exchange_address = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
@@ -62,7 +62,17 @@ class Polymarket:
         self.ctf_address = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
         self.web3 = Web3(Web3.HTTPProvider(self.polygon_rpc))
-        self.web3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        
+        # Try to inject POA middleware for compatibility
+        try:
+            from web3.middleware import geth_poa_middleware
+            self.web3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        except ImportError:
+            try:
+                from web3.middleware.proof_of_authority import ExtraDataToPOAMiddleware
+                self.web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            except ImportError:
+                pass  # Skip if middleware not available
 
         self.usdc = self.web3.eth.contract(
             address=self.usdc_address, abi=self.erc20_approve
@@ -75,8 +85,19 @@ class Polymarket:
         self._init_approvals(False)
 
     def _init_api_keys(self) -> None:
+        """Initialize API credentials with proper proxy wallet support."""
         raw_client = ClobClient(self.clob_url, key=self.private_key, chain_id=self.chain_id)
-        creds_raw = raw_client.create_or_derive_api_key()
+        
+        # Use the monkeypatched method if available, otherwise use create_or_derive_api_creds
+        try:
+            creds_raw = raw_client.create_or_derive_api_key()
+        except AttributeError:
+            creds = raw_client.create_or_derive_api_creds()
+            creds_raw = {
+                'apiKey': creds.api_key if hasattr(creds, 'api_key') else creds['apiKey'],
+                'secret': creds.api_secret if hasattr(creds, 'api_secret') else creds['secret'],
+                'passphrase': creds.api_passphrase if hasattr(creds, 'api_passphrase') else creds['passphrase']
+            }
         
         self.client = ClobClient(
             self.clob_url, 
@@ -91,22 +112,58 @@ class Polymarket:
             funder=self.funder
         )
 
-    def place_order(self, market_id: str, side: str, size: float, price: float):
-        """Modified to use create_and_post_order correctly."""
+    def place_order(self, market_id: str, side: str, size: float, price: float, neg_risk: bool = False):
+        """
+        Place an order on Polymarket.
+        
+        Args:
+            market_id: The token ID for the market
+            side: 'buy' or 'sell'
+            size: Number of shares
+            price: Limit price (0.01 to 0.99)
+            neg_risk: Whether this is a negative risk market
+            
+        Returns:
+            Order response from the API
+        """
         order_args = {
-            "token_id": market_id, # In many contexts market_id passed here is actually token_id
+            "token_id": market_id,
             "price": price,
             "size": size,
             "side": side.upper()
         }
-        # Options parameter is required for proper tick_size and neg_risk configuration
-        options = {"tick_size": "0.01", "neg_risk": False}
+        
+        # Options are required for proper order creation
+        options = {
+            "tick_size": "0.01",
+            "neg_risk": neg_risk
+        }
+        
         return self.client.create_and_post_order(order_args, options=options)
 
-    async def get_order(self, order_id: str):
-        """Fetch order status."""
+    def get_order(self, order_id: str):
+        """
+        Fetch order status (synchronous).
+        
+        Args:
+            order_id: The order ID to fetch
+            
+        Returns:
+            Order details from the API
+        """
         return self.client.get_order(order_id)
 
+    def cancel_order(self, order_id: str):
+        """
+        Cancel an open order.
+        
+        Args:
+            order_id: The order ID to cancel
+            
+        Returns:
+            Cancellation response from the API
+        """
+        return self.client.cancel(order_id)
 
     def _init_approvals(self, run: bool = False) -> None:
         if not run:
@@ -237,34 +294,44 @@ class Polymarket:
                 tradeable_markets.append(market)
         return tradeable_markets
 
-    def get_market(self, token_id: str) -> SimpleMarket:
+    def get_market(self, token_id: str) -> dict:
+        """
+        Get market details by token ID.
+        
+        Args:
+            token_id: The CLOB token ID
+            
+        Returns:
+            Market data dictionary
+        """
         params = {"clob_token_ids": token_id}
         res = httpx.get(self.gamma_markets_endpoint, params=params)
         if res.status_code == 200:
             data = res.json()
-            market = data[0]
-            return self.map_api_to_market(market, token_id)
+            if data:
+                market = data[0]
+                return self.map_api_to_market(market, token_id)
+        return {}
 
-    def map_api_to_market(self, market, token_id: str = "") -> SimpleMarket:
-        market = {
+    def map_api_to_market(self, market, token_id: str = "") -> dict:
+        """Map API response to market dictionary."""
+        market_data = {
             "id": int(market["id"]),
             "question": market["question"],
             "end": market["endDate"],
             "description": market["description"],
             "active": market["active"],
-            # "deployed": market["deployed"],
             "funded": market["funded"],
-            "rewardsMinSize": float(market["rewardsMinSize"]),
-            "rewardsMaxSpread": float(market["rewardsMaxSpread"]),
-            # "volume": float(market["volume"]),
-            "spread": float(market["spread"]),
+            "rewardsMinSize": float(market.get("rewardsMinSize", 0)),
+            "rewardsMaxSpread": float(market.get("rewardsMaxSpread", 0)),
+            "spread": float(market.get("spread", 0)),
             "outcomes": str(market["outcomes"]),
             "outcome_prices": str(market["outcomePrices"]),
-            "clob_token_ids": str(market["clobTokenIds"]),
+            "clob_token_ids": str(market.get("clobTokenIds", "")),
         }
         if token_id:
-            market["clob_token_ids"] = token_id
-        return market
+            market_data["clob_token_ids"] = token_id
+        return market_data
 
     def get_all_events(self) -> "list[SimpleEvent]":
         events = []
@@ -281,7 +348,7 @@ class Polymarket:
                     pass
         return events
 
-    def map_api_to_event(self, event) -> SimpleEvent:
+    def map_api_to_event(self, event) -> dict:
         description = event["description"] if "description" in event.keys() else ""
         return {
             "id": int(event["id"]),
@@ -340,9 +407,9 @@ class Polymarket:
         self,
         market_token: str,
         amount: float,
-        nonce: str = str(round(time.time())),  # for cancellations
+        nonce: str = str(round(time.time())),
         side: str = "BUY",
-        expiration: str = "0",  # timestamp after which order expires
+        expiration: str = "0",
     ):
         signer = Signer(self.private_key)
         builder = OrderBuilder(self.exchange_address, self.chain_id, signer)
@@ -395,7 +462,6 @@ def test():
     print(key)
     chain_id = POLYGON
 
-    # Create CLOB client and get/set API credentials
     client = ClobClient(host, key=key, chain_id=chain_id)
     client.set_api_creds(client.create_or_derive_api_creds())
 
@@ -429,14 +495,11 @@ def gamma():
                 market_data = {
                     "id": int(market["id"]),
                     "question": market["question"],
-                    # "start": market['startDate'],
                     "end": market["endDate"],
                     "description": market["description"],
                     "active": market["active"],
                     "deployed": market["deployed"],
                     "funded": market["funded"],
-                    # "orderMinSize": float(market['orderMinSize']) if market['orderMinSize'] else 0,
-                    # "orderPriceMinTickSize": float(market['orderPriceMinTickSize']),
                     "rewardsMinSize": float(market["rewardsMinSize"]),
                     "rewardsMaxSpread": float(market["rewardsMaxSpread"]),
                     "volume": float(market["volume"]),
@@ -455,9 +518,6 @@ def gamma():
 
 
 def main():
-    # auth()
-    # test()
-    # gamma()
     print(Polymarket().get_all_events())
 
 
@@ -465,48 +525,14 @@ if __name__ == "__main__":
     load_dotenv()
 
     p = Polymarket()
-
-    # k = p.get_api_key()
-    # m = p.get_sampling_simplified_markets()
-
-    # print(m)
-    # m = p.get_market('11015470973684177829729219287262166995141465048508201953575582100565462316088')
-
-    # t = m[0]['token_id']
-    # o = p.get_orderbook(t)
-    # pdb.set_trace()
-
-    """
     
-    (Pdb) pprint(o)
-            OrderBookSummary(
-                market='0x26ee82bee2493a302d21283cb578f7e2fff2dd15743854f53034d12420863b55', 
-                asset_id='11015470973684177829729219287262166995141465048508201953575582100565462316088', 
-                bids=[OrderSummary(price='0.01', size='600005'), OrderSummary(price='0.02', size='200000'), ...
-                asks=[OrderSummary(price='0.99', size='100000'), OrderSummary(price='0.98', size='200000'), ...
-            )
-    
-    """
-
-    # https://polygon-rpc.com
-
     test_market_token_id = (
         "101669189743438912873361127612589311253202068943959811456820079057046819967115"
     )
     test_market_data = p.get_market(test_market_token_id)
 
-    # test_size = 0.0001
     test_size = 1
     test_side = BUY
     test_price = float(ast.literal_eval(test_market_data["outcome_prices"])[0])
-
-    # order = p.execute_order(
-    #    test_price,
-    #    test_size,
-    #    test_side,
-    #    test_market_token_id,
-    # )
-
-    # order = p.execute_market_order(test_price, test_market_token_id)
 
     balance = p.get_usdc_balance()
