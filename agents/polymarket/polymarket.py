@@ -5,6 +5,7 @@ import os
 import pdb
 import time
 import ast
+import logging
 import requests
 
 from dotenv import load_dotenv
@@ -31,6 +32,8 @@ from eth_account import Account
 from agents.utils.objects import SimpleMarket, SimpleEvent
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class Polymarket:
@@ -304,14 +307,18 @@ class Polymarket:
         Returns:
             Market data dictionary
         """
-        params = {"clob_token_ids": token_id}
-        res = httpx.get(self.gamma_markets_endpoint, params=params)
-        if res.status_code == 200:
-            data = res.json()
-            if data:
-                market = data[0]
-                return self.map_api_to_market(market, token_id)
-        return {}
+        try:
+            params = {"clob_token_ids": token_id}
+            res = httpx.get(self.gamma_markets_endpoint, params=params)
+            if res.status_code == 200:
+                data = res.json()
+                if data:
+                    market = data[0]
+                    return self.map_api_to_market(market, token_id)
+            return {}
+        except Exception as e:
+            logger.error(f"Invalid market {token_id}: {e}")
+            return {}
 
     def map_api_to_market(self, market, token_id: str = "") -> dict:
         """Map API response to market dictionary."""
