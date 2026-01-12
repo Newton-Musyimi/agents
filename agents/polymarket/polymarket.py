@@ -99,7 +99,9 @@ class Polymarket:
             "size": size,
             "side": side.upper()
         }
-        return self.client.create_and_post_order(order_args)
+        # Options parameter is required for proper tick_size and neg_risk configuration
+        options = {"tick_size": "0.01", "neg_risk": False}
+        return self.client.create_and_post_order(order_args, options=options)
 
     async def get_order(self, order_id: str):
         """Fetch order status."""
