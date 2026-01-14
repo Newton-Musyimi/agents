@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from agents.polymarket.gamma import GammaMarketClient as Gamma
+from agents.agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.connectors.chroma import PolymarketRAG as Chroma
 from agents.utils.objects import SimpleEvent, SimpleMarket
 from agents.application.prompts import Prompter

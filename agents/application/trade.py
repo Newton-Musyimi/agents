@@ -1,5 +1,5 @@
 from agents.application.executor import Executor as Agent
-from agents.polymarket.gamma import GammaMarketClient as Gamma
+from agents.agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
 
 import shutil
