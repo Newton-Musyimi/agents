@@ -29,7 +29,7 @@ from py_clob_client.clob_types import (
 from py_clob_client.order_builder.constants import BUY
 from eth_account import Account
 
-from agents.utils.objects import SimpleMarket, SimpleEvent
+from ..utils.objects import SimpleMarket, SimpleEvent
 
 load_dotenv()
 
