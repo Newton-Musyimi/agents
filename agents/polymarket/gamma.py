@@ -1,7 +1,11 @@
 import httpx
 import json
 
-from agents.polymarket.polymarket import Polymarket
+try:
+    from agents.polymarket.polymarket import Polymarket
+except ImportError:
+    from polymarket.polymarket import Polymarket
+
 from agents.utils.objects import Market, PolymarketEvent, ClobReward, Tag
 
 
