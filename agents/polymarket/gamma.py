@@ -1,9 +1,9 @@
 import httpx
 import json
 
-from polymarket.polymarket import Polymarket
+from .polymarket import Polymarket
 
-from agents.utils.objects import Market, PolymarketEvent, ClobReward, Tag
+from ..utils.objects import Market, PolymarketEvent, ClobReward, Tag  # .. means "parent directory"
 
 
 class GammaMarketClient:
